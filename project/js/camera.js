@@ -31,6 +31,7 @@ const BROADCAST = {
   fov: 18,            // 망원(좁은 화각) = 중계 특유의 압축된 원근감. 화면 세로 약 10야드
   hurdleFov: 11,      // 허들 순간 줌인
   hurdle: [1.95, 2.7], // 허들 구간 (장면 시간)
+  celebrationFov: 12, // 플레이가 끝나고 세레모니가 시작되면 러닝백 쪽으로 줌인
 };
 
 function broadcastCamera(runnerPos, time, orbit = { yaw: 0, pitch: 0, zoom: 1 }) {
@@ -51,7 +52,11 @@ function broadcastCamera(runnerPos, time, orbit = { yaw: 0, pitch: 0, zoom: 1 })
   // 허들 구간에서 화각을 좁혀 줌인 (들어갈 때·나올 때 모두 부드럽게)
   const [h0, h1] = BROADCAST.hurdle;
   const zoomIn = smoothstep(h0 - 0.3, h0, time) * (1 - smoothstep(h1, h1 + 0.3, time));
-  const fov = BROADCAST.fov + (BROADCAST.hurdleFov - BROADCAST.fov) * zoomIn;
+  // [추가] 세레모니 줌인: 플레이 끝(SCENE_DURATION) 이후 0.5초 동안 서서히. 세레모니가 없으면 시간이 끝에서 멈추므로 0.
+  const celebrationZoom = smoothstep(SCENE_DURATION, SCENE_DURATION + 0.5, time);
+  const fov = BROADCAST.fov
+    + (BROADCAST.hurdleFov - BROADCAST.fov) * zoomIn
+    + (BROADCAST.celebrationFov - BROADCAST.fov) * celebrationZoom;
 
   return { eye, view: lookAt(eye, target, [0, 1, 0]), fov: degToRad(fov), near: 0.5, hide: [] };
 }

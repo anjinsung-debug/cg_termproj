@@ -119,9 +119,167 @@ function sampleTrack(track, time) {
   return { pos, yaw, pose, rootMatrix: multiply(translation(...pos), rotationY(yaw)) };
 }
 
-// [추가] HW2 calculateSceneState(time)에 해당: 모든 선수의 상태
-function sampleScene(time) {
+// ============================================================================
+// [추가] 세레모니 (자유 기능, 담당: 안진성)
+// 플레이가 끝난 뒤(SCENE_DURATION 이후) 러닝백만 이어서 움직인다. 수비수는 마지막 자세 그대로.
+// 키프레임은 플레이 마지막 위치·방향 기준의 상대값으로 적고, 아래 fromPlayEnd()로 절대값으로 바꾼다.
+// ============================================================================
+
+const PLAY_END = KEYFRAMES.runner[KEYFRAMES.runner.length - 1];
+const endCos = Math.cos(PLAY_END.yaw);
+const endSin = Math.sin(PLAY_END.yaw);
+// 러닝백 기준 방향(앞 = +Z)을 월드 방향으로: rotationY(PLAY_END.yaw)와 같은 계산
+const fromRunnerDir = ([x, y, z]) => [x * endCos + z * endSin, y, -x * endSin + z * endCos];
+
+function fromPlayEnd(local) {
+  return local.map(({ time, pos, yaw, pose }) => {
+    const d = fromRunnerDir(pos);
+    return {
+      time,
+      pos: [PLAY_END.pos[0] + d[0], PLAY_END.pos[1] + d[1], PLAY_END.pos[2] + d[2]],
+      yaw: PLAY_END.yaw + yaw,
+      pose,
+    };
+  });
+}
+
+const standing = {
+  upperArmR: [-0.3, 0, 0], lowerArmR: [-1.3, 0, 0],   // 공은 계속 몸에 붙여 든다
+};
+const armsUp = {                                        // 두 팔 번쩍
+  torso: [-0.15, 0, 0],
+  upperArmL: [-2.9, 0, -0.35], lowerArmL: [-0.2, 0, 0],
+  upperArmR: [-2.9, 0, 0.35], lowerArmR: [-0.2, 0, 0],
+};
+
+// 댄스: 0.3초마다 좌우로 골반을 흔들고 팔을 번갈아 올린다 (같은 동작 반복이라 반복문으로 생성)
+function danceSteps() {
+  const steps = [];
+  for (let i = 0; i < 6; i++) {
+    const s = i % 2 ? 1 : -1;
+    steps.push({
+      time: 0.6 + 0.3 * i,
+      pos: [0.15 * s, -0.08, 1.0],
+      yaw: 0.3 * s,
+      pose: {
+        pelvis: [0, 0, 0.15 * s],
+        torso: [0, 0.3 * s, -0.2 * s],
+        thighL: [s > 0 ? -0.5 : 0, 0, 0], shinL: [s > 0 ? 0.8 : 0.2, 0, 0],
+        thighR: [s < 0 ? -0.5 : 0, 0, 0], shinR: [s < 0 ? 0.8 : 0.2, 0, 0],
+        upperArmL: [s > 0 ? -2.6 : -0.6, 0, -0.6], lowerArmL: [-0.8, 0, 0],
+        upperArmR: [-0.3, 0, 0], lowerArmR: [-1.3, 0, 0],
+      },
+    });
+  }
+  return steps;
+}
+
+const CELEBRATIONS = {
+  // 스파이크: 공을 머리 위로 들었다가 바닥에 내리꽂고 두 팔을 든다. 공은 release 시점에 손을 떠난다.
+  spike: {
+    label: 'Q 스파이크',
+    track: fromPlayEnd([
+      { time: 0.0, pos: [0, 0, 0], yaw: 0, pose: runPose(1) },
+      { time: 0.3, pos: [0, 0, 1.2], yaw: 0, pose: runPose(-0.4) },
+      { time: 0.6, pos: [0, 0, 1.6], yaw: 0,
+        pose: { torso: [-0.25, 0, 0], thighL: [-0.3, 0, 0], upperArmR: [-2.9, 0, 0], lowerArmR: [-0.3, 0, 0] } },
+      { time: 0.75, pos: [0, -0.15, 1.8], yaw: 0,
+        pose: { torso: [0.5, 0, 0], thighL: [-0.7, 0, 0], shinL: [0.9, 0, 0], thighR: [-0.2, 0, 0],
+          shinR: [0.6, 0, 0], upperArmR: [-0.5, 0, 0], lowerArmR: [0, 0, 0] } },
+      { time: 1.1, pos: [0, 0, 1.8], yaw: 0, pose: armsUp },
+      { time: 1.5, pos: [0, 0, 1.8], yaw: 0,
+        pose: { ...armsUp, lowerArmL: [-1.3, 0, 0], lowerArmR: [-1.3, 0, 0] } },  // 알통 자세
+      { time: 2.4, pos: [0, 0, 1.8], yaw: 0, pose: armsUp },  // 공이 멈출 때까지 자세 유지
+    ]),
+    // 손을 떠나는 시각과 속도 (러닝백 기준 방향, 야드/초): 아래로 세게, 앞으로 조금
+    release: { time: 0.72, velocity: [0, -14, 4] },
+  },
+  // 점프: 웅크렸다가 뛰어오르며 반 바퀴 돌고, 착지 후 왼손 주먹을 치켜든다
+  jump: {
+    label: 'W 점프',
+    track: fromPlayEnd([
+      { time: 0.0, pos: [0, 0, 0], yaw: 0, pose: runPose(1) },
+      { time: 0.3, pos: [0, 0, 1.0], yaw: 0, pose: runPose(-0.3) },
+      { time: 0.55, pos: [0, -0.25, 1.3], yaw: 0,
+        pose: { ...crouch, upperArmL: [0.8, 0, 0] } },
+      { time: 0.8, pos: [0, 0.9, 1.5], yaw: Math.PI * 0.6,
+        pose: { thighL: [-0.6, 0, 0], shinL: [0.9, 0, 0], thighR: [-0.4, 0, 0], shinR: [0.7, 0, 0],
+          upperArmL: [-3.0, 0, -0.2], ...standing } },
+      { time: 1.05, pos: [0, -0.2, 1.7], yaw: Math.PI, pose: crouch },
+      { time: 1.3, pos: [0, 0, 1.7], yaw: Math.PI,
+        pose: { upperArmL: [-2.9, 0, -0.2], lowerArmL: [-0.9, 0, 0], ...standing } },
+      { time: 1.6, pos: [0, 0, 1.7], yaw: Math.PI,
+        pose: { upperArmL: [-3.0, 0, -0.2], lowerArmL: [-0.4, 0, 0], ...standing } },
+    ]),
+  },
+  // 댄스: 멈춰 서서 좌우로 흔들기
+  dance: {
+    label: 'E 댄스',
+    track: fromPlayEnd([
+      { time: 0.0, pos: [0, 0, 0], yaw: 0, pose: runPose(1) },
+      { time: 0.3, pos: [0, 0, 1.0], yaw: 0, pose: standing },
+      ...danceSteps(),
+      { time: 2.4, pos: [0, 0, 1.0], yaw: 0, pose: armsUp },
+    ]),
+  },
+};
+for (const c of Object.values(CELEBRATIONS)) c.duration = c.track[c.track.length - 1].time;
+
+// [추가] 손을 떠난 공의 위치: 포물선 운동 + 바닥 튕김 (중력 10.7야드/s² = 9.8m/s²).
+// 튈 때마다 세로 속도는 반대 방향으로 35%, 가로 속도는 70%만 남는다. 거의 안 튀면 멈춤.
+const GRAVITY = -10.7;
+const BALL_REST_Y = 0.1;
+
+function ballFlight(p0, v0, t) {
+  let [x, y, z] = p0;
+  let [vx, vy, vz] = v0;
+  let remaining = t;
+  for (let bounce = 0; bounce < 12; bounce++) {
+    // 바닥(BALL_REST_Y)에 닿는 시간: y + vy·τ + ½g·τ² = BALL_REST_Y 의 양수 근
+    const c = y - BALL_REST_Y;
+    const tHit = (-vy - Math.sqrt(vy * vy - 2 * GRAVITY * c)) / GRAVITY;
+    if (remaining <= tHit) {
+      return [x + vx * remaining, y + vy * remaining + 0.5 * GRAVITY * remaining * remaining, z + vz * remaining];
+    }
+    x += vx * tHit;
+    z += vz * tHit;
+    y = BALL_REST_Y;
+    remaining -= tHit;
+    vy = -(vy + GRAVITY * tHit) * 0.35;
+    vx *= 0.7;
+    vz *= 0.7;
+    if (vy < 0.3) break;   // 거의 안 튀면 바닥에 멈춘다
+  }
+  return [x, BALL_REST_Y, z];
+}
+
+// [추가] HW2 calculateSceneState(time)에 해당: 모든 선수의 상태.
+// celebration이 있으면 플레이가 끝난 뒤 러닝백만 세레모니 트랙을 따른다.
+function sampleScene(time, celebration = null) {
   const scene = {};
   for (const name of Object.keys(KEYFRAMES)) scene[name] = sampleTrack(KEYFRAMES[name], time);
+  if (celebration && time > SCENE_DURATION) {
+    scene.runner = sampleTrack(CELEBRATIONS[celebration].track, time - SCENE_DURATION);
+  }
   return scene;
+}
+
+// [추가] 러닝백 관절 frame. 스파이크로 공이 손을 떠난 뒤에는 공 frame만 따로 계산한다
+// (계층에서 떨어져 나간 공 = 부모 없이 월드 좌표로 움직임).
+function runnerFramesAt(time, celebration = null) {
+  const runner = sampleScene(time, celebration).runner;
+  const frames = computeFrames(PLAYER_NODES, runner.pose, runner.rootMatrix);
+  const cel = celebration && CELEBRATIONS[celebration];
+  const t = time - SCENE_DURATION;
+  if (cel && cel.release && t > cel.release.time) {
+    const atRelease = sampleTrack(cel.track, cel.release.time);
+    const releaseFrame = computeFrames(PLAYER_NODES, atRelease.pose, atRelease.rootMatrix).ball;
+    const flight = t - cel.release.time;
+    const p = ballFlight([releaseFrame[12], releaseFrame[13], releaseFrame[14]],
+      fromRunnerDir(cel.release.velocity), flight);
+    const orientation = Float32Array.from(releaseFrame);
+    orientation[12] = orientation[13] = orientation[14] = 0;     // 놓을 때의 방향만 유지
+    frames.ball = multiplyAll(translation(...p), orientation, rotationX(-8 * Math.min(flight, 1.2)));
+  }
+  return frames;
 }

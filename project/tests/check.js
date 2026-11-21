@@ -84,4 +84,32 @@ const r = toView(br.view, [1, 1, 12]);
 assert(r[2] < 0 && Math.abs(r[0] / r[2]) < 0.1, `중계: 러닝백이 화면 중앙 ${r}`);
 assert(run('broadcastCamera([1, 0, 12], 2.3)').fov < br.fov, '중계: 허들 때 화각이 좁아짐');
 
-console.log('OK: inverse, lookAt=inverse(camera world), joint tree heights, hierarchy inheritance, keyframe sampling, cameras');
+// 8) 세레모니: 플레이 끝 자세에서 끊김 없이 이어지고, 길이가 정해져 있다
+const end = run('sampleTrack(KEYFRAMES.runner, SCENE_DURATION)');
+for (const name of ['spike', 'jump', 'dance']) {
+  const start = run(`sampleTrack(CELEBRATIONS.${name}.track, 0)`);
+  near(start.pos, end.pos, `${name}: 시작 위치 = 플레이 끝 위치`);
+  assert(Math.abs(start.yaw - end.yaw) < 1e-9, `${name}: 시작 방향 = 플레이 끝 방향`);
+  assert(run(`CELEBRATIONS.${name}.duration`) > 1, `${name}: 길이`);
+}
+// 세레모니가 없으면 플레이 끝 이후에도 러닝백은 그대로
+near(run('sampleScene(SCENE_DURATION + 1).runner.pos'), end.pos, '세레모니 없으면 멈춤');
+
+// 9) 공 비행: 출발점에서 시작, 바닥 아래로 안 내려가고, 결국 바닥에 멈춘다
+near(run('ballFlight([0, 2, 0], [0, -14, 4], 0)'), [0, 2, 0], '공: t=0 위치');
+for (let t = 0; t < 4; t += 0.01) {
+  assert(run(`ballFlight([0, 2, 0], [0, -14, 4], ${t})`)[1] >= run('BALL_REST_Y') - 1e-6, `공: ${t}초에 바닥 아래`);
+}
+const rest1 = run('ballFlight([0, 2, 0], [0, -14, 4], 5)');
+const rest2 = run('ballFlight([0, 2, 0], [0, -14, 4], 8)');
+near(rest1, rest2, '공: 멈춘 뒤 그대로');
+assert(Math.abs(rest1[1] - run('BALL_REST_Y')) < 1e-6, '공: 바닥에 멈춤');
+// 스파이크: 놓기 전에는 손을 따라가고, 놓은 뒤에는 손과 떨어져 바닥으로
+const T = run('SCENE_DURATION');
+const ballY = (t) => run(`runnerFramesAt(${T + t}, 'spike').ball`)[13];
+const handBall = (t) => run(`(() => { const r = sampleScene(${T + t}, 'spike').runner;
+  return computeFrames(PLAYER_NODES, r.pose, r.rootMatrix).ball; })()`)[13];
+assert(Math.abs(ballY(0.5) - handBall(0.5)) < 1e-6, '스파이크: 놓기 전 공 = 손 위치');
+assert(Math.abs(ballY(2.35) - run('BALL_REST_Y')) < 0.05, `스파이크: 끝날 때 공은 바닥 ${ballY(2.35)}`);
+
+console.log('OK: inverse, lookAt=inverse(camera world), joint tree heights, hierarchy inheritance, keyframe sampling, cameras, celebrations, ball flight');

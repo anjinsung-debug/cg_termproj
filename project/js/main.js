@@ -265,13 +265,27 @@
     const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
     const initialState = () => ({
-      time: 0,                                // 장면 시간 (0 ~ SCENE_DURATION)
+      time: 0,                                // 장면 시간 (0 ~ endTime())
       playing: true,
       cameraMode: 'broadcast',                // camera.js CAMERA_MODES (1/2/3키)
       orbit: { yaw: 0, pitch: 0, zoom: 1 },   // 중계 시점에 마우스로 더한 회전·줌
+      selected: 'spike',                      // [추가] Q/W/E로 고른 세레모니
+      celebration: null,                      // [추가] C를 누르면 설정 → 플레이 끝에 이어서 재생
     });
     let state = initialState();
     let dragging = false;
+
+    // [추가] 플레이(3초) + 세레모니 길이. 세레모니가 없으면 플레이 끝에서 멈춘다.
+    const endTime = () =>
+      SCENE_DURATION + (state.celebration ? CELEBRATIONS[state.celebration].duration : 0);
+    const CELEBRATION_KEYS = { KeyQ: 'spike', KeyW: 'jump', KeyE: 'dance' };
+
+    function startCelebration(name) {
+      state.celebration = name;
+      // 플레이가 이미 끝났으면 세레모니를 처음부터, 아직이면 플레이가 끝나는 대로 이어진다
+      if (state.time >= SCENE_DURATION) state.time = SCENE_DURATION;
+      state.playing = true;
+    }
 
     // event.code는 물리 키 위치('Space', 'ArrowLeft')라서 한글 입력 상태나 Shift와 상관없이 같은 값이다.
     // (event.key는 한글 입력 상태에서 'ㅂ'이나 'Process'가 되어 키가 안 먹는다)
@@ -279,15 +293,26 @@
       const code = event.code;
       if (code === 'Space' || code.startsWith('Arrow')) event.preventDefault(); // 페이지 스크롤 방지
       if (code === 'Space') {
-        if (state.time >= SCENE_DURATION) state.time = 0;  // 끝에서 누르면 처음부터 다시
+        if (state.time >= endTime()) {        // 끝에서 누르면 처음부터 다시 (세레모니는 해제)
+          state.time = 0;
+          state.celebration = null;
+        }
         state.playing = !state.playing;
       }
       if (code === 'ArrowLeft' || code === 'ArrowRight') {
         state.playing = false;                // 프레임 이동은 정지 상태에서
         const step = code === 'ArrowRight' ? FRAME_STEP : -FRAME_STEP;
-        state.time = clamp(state.time + step, 0, SCENE_DURATION);
+        state.time = clamp(state.time + step, 0, endTime());
       }
-      if (code === 'KeyR') state = { ...initialState(), cameraMode: state.cameraMode };
+      if (code === 'KeyR') {
+        state = { ...initialState(), cameraMode: state.cameraMode, selected: state.selected };
+      }
+      // [추가] 세레모니: Q/W/E로 고르고 C로 시작. 이미 세레모니 중이면 고르는 즉시 바꿔서 다시 시작.
+      if (CELEBRATION_KEYS[code]) {
+        state.selected = CELEBRATION_KEYS[code];
+        if (state.celebration) startCelebration(state.selected);
+      }
+      if (code === 'KeyC') startCelebration(state.selected);
       // [추가] 1/2/3: 카메라 시점 전환 (숫자패드도 허용)
       const digit = code.match(/^(?:Digit|Numpad)([1-3])$/);
       if (digit) state.cameraMode = CAMERA_MODES[Number(digit[1]) - 1];
@@ -313,8 +338,8 @@
         state.orbit.pitch *= back;
       }
       if (!state.playing) return;
-      state.time = Math.min(state.time + dt, SCENE_DURATION);
-      if (state.time >= SCENE_DURATION) state.playing = false;  // 끝에서 멈춤 (세레모니가 이어질 자리)
+      state.time = Math.min(state.time + dt, endTime());
+      if (state.time >= endTime()) state.playing = false;  // 플레이(또는 세레모니) 끝에서 멈춤
     }
 
     // ========================================================================
@@ -356,9 +381,9 @@
       gl.clearColor(0.05, 0.06, 0.1, 1.0);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-      const scene = sampleScene(state.time);
+      const scene = sampleScene(state.time, state.celebration);
       const framesOf = (track) => computeFrames(PLAYER_NODES, track.pose, track.rootMatrix);
-      const runnerFrames = framesOf(scene.runner);
+      const runnerFrames = runnerFramesAt(state.time, state.celebration);  // 스파이크 후 공 포함
 
       // ---- [추가] 카메라 (camera.js). 시점마다 View 행렬·화각·숨길 부위가 다르다 ----
       let camera;
@@ -367,7 +392,7 @@
       } else if (state.cameraMode === 'ball') {
         const dt = 0.05;  // 공 진행 방향을 구할 앞뒤 시간 간격
         const ballAt = (t) => {
-          const frame = framesOf(sampleTrack(KEYFRAMES.runner, t)).ball;
+          const frame = runnerFramesAt(t, state.celebration).ball;
           return [frame[12], frame[13], frame[14]];
         };
         const root = scene.runner.rootMatrix;
@@ -411,7 +436,8 @@
         textures.white, materials.emissive);
     }
 
-    const HELP = 'Space: 재생/정지 | ←/→: 프레임 이동 | R: 처음부터 | 1/2/3: 시점 | 드래그·휠: 중계 카메라 회전·줌';
+    const HELP = 'Space: 재생/정지 | ←/→: 프레임 이동 | R: 처음부터 | 1/2/3: 시점 | 드래그·휠: 중계 카메라 회전·줌\n'
+      + 'Q/W/E: 세레모니 선택(스파이크/점프/댄스) | C: 세레모니 시작';
 
     let lastMs = performance.now();
     function animate(nowMs) {
@@ -419,7 +445,11 @@
       lastMs = nowMs;
       updateState(dt);
       drawScene();
-      status.textContent = `${HELP}\n${state.playing ? '▶' : '⏸'} ${state.time.toFixed(2)}s / ${SCENE_DURATION.toFixed(1)}s | 시점: ${CAMERA_LABELS[state.cameraMode]}`;
+      const celebration = state.celebration
+        ? `${CELEBRATIONS[state.celebration].label} ${state.time > SCENE_DURATION ? '재생 중' : '(플레이 끝나면 시작)'}`
+        : `${CELEBRATIONS[state.selected].label} 선택됨`;
+      status.textContent = `${HELP}\n${state.playing ? '▶' : '⏸'} ${state.time.toFixed(2)}s / ${endTime().toFixed(1)}s`
+        + ` | 시점: ${CAMERA_LABELS[state.cameraMode]} | 세레모니: ${celebration}`;
       requestAnimationFrame(animate);
     }
     requestAnimationFrame(animate);
