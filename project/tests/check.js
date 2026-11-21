@@ -7,7 +7,7 @@ const vm = require('vm');
 const assert = require('assert');
 
 const context = vm.createContext({ Float32Array, Math });
-for (const file of ['matrix.js', 'player.js']) {
+for (const file of ['matrix.js', 'player.js', 'animation.js']) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'js', file), 'utf8'), context);
 }
 const run = (code) => vm.runInContext(code, context);
@@ -39,4 +39,26 @@ const ballA = [straight.ball[12], straight.ball[13], straight.ball[14]];
 const ballB = [turned.ball[12], turned.ball[13], turned.ball[14]];
 near(ballB, [ballA[2], ballA[1], -ballA[0]], '루트 회전이 공까지 상속');
 
-console.log('OK: inverse, lookAt=inverse(camera world), joint tree heights, hierarchy inheritance');
+// 5) 키프레임 보간: 키프레임 시각에는 그 값 그대로, 사이에는 중간값, 범위 밖은 끝값
+const track = [
+  { time: 0, pos: [0, 0, 0], yaw: 0, pose: { torso: [0, 0, 0] } },
+  { time: 1, pos: [2, 0, 4], yaw: 2, pose: { torso: [1, 0, 0], head: [0, 1, 0] } },
+  { time: 3, pos: [2, 0, 8], yaw: 4, pose: {} },
+];
+context.track = track;
+const at = (t) => run(`sampleTrack(track, ${t})`);
+near(at(1).pos, [2, 0, 4], '키프레임 시각');
+near(at(0.5).pos, [1, 0, 2], '중간 위치');
+assert(Math.abs(at(0.5).yaw - 1) < 1e-9, '중간 yaw');
+near(at(0.5).pose.head, [0, 0.5, 0], '한쪽에만 있는 관절은 0에서 보간');
+near(at(2).pose.torso, [0.5, 0, 0], '다음 키프레임에 없으면 0으로');
+near(at(-1).pos, [0, 0, 0], '시작 전은 첫 키프레임');
+near(at(9).pos, [2, 0, 8], '끝 이후는 마지막 키프레임');
+
+// 6) 실제 장면 데이터: 트랙이 시간순이고 장면 길이를 덮는다
+for (const [name, frames] of Object.entries(run('KEYFRAMES'))) {
+  frames.forEach((f, i) => i && assert(f.time > frames[i - 1].time, `${name} 키프레임 시간순`));
+  assert.strictEqual(frames[frames.length - 1].time, run('SCENE_DURATION'), `${name} 끝 = 장면 길이`);
+}
+
+console.log('OK: inverse, lookAt=inverse(camera world), joint tree heights, hierarchy inheritance, keyframe sampling');

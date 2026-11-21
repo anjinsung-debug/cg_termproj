@@ -220,6 +220,9 @@
       helmet: loadTexture(null, [160, 165, 170]),
       skin: loadTexture(null, [120, 80, 55]),
       ball: loadTexture(null, [110, 55, 25]),
+      awayJersey: loadTexture(null, [235, 235, 235]),
+      awayPants: loadTexture(null, [30, 30, 35]),
+      awayHelmet: loadTexture(null, [25, 25, 30]),
     };
 
     // 재질: Phong 계수 + UV 반복 횟수
@@ -231,55 +234,76 @@
     };
 
     // [추가] 선수 부위(look) → 텍스처 + 재질. 헬멧만 금속성 하이라이트.
-    const looks = {
+    const homeLooks = {
       jersey: { texture: textures.jersey, material: materials.matte },
       pants: { texture: textures.pants, material: materials.matte },
       helmet: { texture: textures.helmet, material: materials.metal },
       skin: { texture: textures.skin, material: materials.matte },
       ball: { texture: textures.ball, material: materials.matte },
     };
+    const awayLooks = {
+      ...homeLooks,
+      jersey: { texture: textures.awayJersey, material: materials.matte },
+      pants: { texture: textures.awayPants, material: materials.matte },
+      helmet: { texture: textures.awayHelmet, material: materials.metal },
+    };
+    // [추가] 장면의 선수들: animation.js 트랙 이름 → 유니폼. 공은 러닝백만 든다.
+    const PLAYERS = [
+      { track: 'runner', looks: homeLooks, hasBall: true },
+      { track: 'defender1', looks: awayLooks, hasBall: false },
+      { track: 'defender2', looks: awayLooks, hasBall: false },
+    ];
 
     // ========================================================================
-    // 4. 상태 + 키보드 입력 (누르고 있는 동안 연속 동작)
+    // 4. 상태 + 입력
+    //    키보드: Space 재생/정지, ←/→ 한 프레임 이동, R 처음부터
+    //    마우스: 드래그로 카메라 궤도 회전, 휠로 줌
     // ========================================================================
 
-    const LIGHT_POSITION = [3, 5, 3];
+    const LIGHT_POSITION = [0, 12, 8];
+    const FRAME_STEP = 1 / 30;                // ←/→ 한 번에 이동하는 시간 (30fps 기준 1프레임)
+    const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
     const initialState = () => ({
-      playerYaw: 0,                  // 선수 전체(루트) Y축 회전 (Q/E)
-      stride: 0,                     // 팔다리 흔들기 -1~1 (W/S) → 관절 트리 테스트용
-      camera: { yaw: 0.6, pitch: 0.3, distance: 5 },
+      time: 0,                                // 장면 시간 (0 ~ SCENE_DURATION)
+      playing: true,
+      camera: { yaw: 1.9, pitch: 0.35, distance: 9 },
     });
     let state = initialState();
 
-    // event.code는 물리 키 위치('KeyQ', 'ArrowLeft')라서 한글 입력 상태나 Shift와 상관없이 같은 값이다.
+    // event.code는 물리 키 위치('Space', 'ArrowLeft')라서 한글 입력 상태나 Shift와 상관없이 같은 값이다.
     // (event.key는 한글 입력 상태에서 'ㅂ'이나 'Process'가 되어 키가 안 먹는다)
-    const pressed = new Set();
     window.addEventListener('keydown', (event) => {
       const code = event.code;
-      if (code.startsWith('Arrow')) event.preventDefault(); // 페이지 스크롤 방지
-      if (code === 'KeyR') state = initialState();
-      pressed.add(code);
+      if (code === 'Space' || code.startsWith('Arrow')) event.preventDefault(); // 페이지 스크롤 방지
+      if (code === 'Space') {
+        if (state.time >= SCENE_DURATION) state.time = 0;  // 끝에서 누르면 처음부터 다시
+        state.playing = !state.playing;
+      }
+      if (code === 'ArrowLeft' || code === 'ArrowRight') {
+        state.playing = false;                // 프레임 이동은 정지 상태에서
+        const step = code === 'ArrowRight' ? FRAME_STEP : -FRAME_STEP;
+        state.time = clamp(state.time + step, 0, SCENE_DURATION);
+      }
+      if (code === 'KeyR') state = { ...initialState(), camera: state.camera };
     });
-    window.addEventListener('keyup', (event) => pressed.delete(event.code));
-    // 키를 누른 채 창을 벗어나면 keyup이 오지 않아 계속 눌린 상태로 남으므로 비운다.
-    window.addEventListener('blur', () => pressed.clear());
 
-    const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+    // [추가] 마우스 드래그 궤도 회전 + 휠 줌
+    canvas.addEventListener('mousemove', (event) => {
+      if (event.buttons !== 1) return;
+      const camera = state.camera;
+      camera.yaw -= event.movementX * 0.01;
+      camera.pitch = clamp(camera.pitch + event.movementY * 0.01, 0.05, 1.5);
+    });
+    canvas.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      state.camera.distance = clamp(state.camera.distance * (1 + event.deltaY * 0.001), 3, 40);
+    }, { passive: false });
 
     function updateState(dt) {
-      const turn = 1.5 * dt;
-      if (pressed.has('KeyQ')) state.playerYaw += turn;
-      if (pressed.has('KeyE')) state.playerYaw -= turn;
-      if (pressed.has('KeyW')) state.stride = clamp(state.stride + turn, -1, 1);
-      if (pressed.has('KeyS')) state.stride = clamp(state.stride - turn, -1, 1);
-
-      const camera = state.camera;
-      if (pressed.has('ArrowLeft')) camera.yaw -= turn;
-      if (pressed.has('ArrowRight')) camera.yaw += turn;
-      if (pressed.has('ArrowUp')) camera.pitch = clamp(camera.pitch + turn, 0.05, 1.5);
-      if (pressed.has('ArrowDown')) camera.pitch = clamp(camera.pitch - turn, 0.05, 1.5);
-      if (pressed.has('KeyZ')) camera.distance = clamp(camera.distance - 5 * dt, 3, 25);
-      if (pressed.has('KeyX')) camera.distance = clamp(camera.distance + 5 * dt, 3, 25);
+      if (!state.playing) return;
+      state.time = Math.min(state.time + dt, SCENE_DURATION);
+      if (state.time >= SCENE_DURATION) state.playing = false;  // 끝에서 멈춤 (세레모니가 이어질 자리)
     }
 
     // ========================================================================
@@ -321,9 +345,13 @@
       gl.clearColor(0.05, 0.06, 0.1, 1.0);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-      // 궤도 카메라: target을 중심으로 yaw/pitch/distance 구면 좌표
+      const scene = sampleScene(state.time);
+
+      // 궤도 카메라: target을 중심으로 yaw/pitch/distance 구면 좌표. target은 러닝백을 따라간다.
+      // ponytail: 임시 카메라. 중계 VIEW·1인칭·공 시점은 다음 작업에서 교체.
       const { yaw, pitch, distance } = state.camera;
-      const target = [0, 1, 0];
+      const runnerPos = scene.runner.pos;
+      const target = [runnerPos[0], 1, runnerPos[2]];
       const eye = [
         target[0] + distance * Math.cos(pitch) * Math.sin(yaw),
         target[1] + distance * Math.sin(pitch),
@@ -339,17 +367,21 @@
       const draw = (mesh, model, texture, material) =>
         drawMesh(mesh, model, texture, material, viewProjectionMatrix);
 
-      // 바닥: 정육면체를 비균등 스케일
+      // 바닥: 정육면체를 비균등 스케일 (임시. 실제 필드는 홍채운 작업에서 교체)
       draw(meshes.cube,
-        multiplyAll(translation(0, -0.05, 0), scaling(10, 0.05, 10)),
+        multiplyAll(translation(0, -0.05, 8), scaling(20, 0.05, 20)),
         textures.checker, materials.floor);
 
-      // ---- [추가] 선수 관절 트리 (player.js, HW1 계층 구조 일반화) ----
-      const frames = computeFrames(PLAYER_NODES, runPose(state.stride), rotationY(state.playerYaw));
-      for (const node of PLAYER_NODES) {
-        const look = looks[node.shape.look];
-        draw(meshes[node.shape.mesh], shapeMatrix(frames[node.name], node.shape),
-          look.texture, look.material);
+      // ---- [추가] 선수 관절 트리 (player.js) × 키프레임 (animation.js) ----
+      for (const player of PLAYERS) {
+        const { pose, rootMatrix } = scene[player.track];
+        const frames = computeFrames(PLAYER_NODES, pose, rootMatrix);
+        for (const node of PLAYER_NODES) {
+          if (node.name === 'ball' && !player.hasBall) continue;
+          const look = player.looks[node.shape.look];
+          draw(meshes[node.shape.mesh], shapeMatrix(frames[node.name], node.shape),
+            look.texture, look.material);
+        }
       }
 
       // 광원 위치 표시
@@ -358,8 +390,7 @@
         textures.white, materials.emissive);
     }
 
-    status.textContent =
-      'Q/E: 선수 회전 | W/S: 팔다리 흔들기 | 방향키: 카메라 회전 | Z/X: 줌 | R: 초기화';
+    const HELP = 'Space: 재생/정지 | ←/→: 프레임 이동 | R: 처음부터 | 마우스 드래그: 카메라 회전 | 휠: 줌';
 
     let lastMs = performance.now();
     function animate(nowMs) {
@@ -367,6 +398,7 @@
       lastMs = nowMs;
       updateState(dt);
       drawScene();
+      status.textContent = `${HELP}\n${state.playing ? '▶' : '⏸'} ${state.time.toFixed(2)}s / ${SCENE_DURATION.toFixed(1)}s`;
       requestAnimationFrame(animate);
     }
     requestAnimationFrame(animate);
