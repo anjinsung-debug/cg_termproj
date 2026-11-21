@@ -227,7 +227,7 @@
 
     // 재질: Phong 계수 + UV 반복 횟수
     const materials = {
-      floor: { ka: 0.25, kd: 0.8, ks: 0.05, shininess: 8, uvScale: [8, 8] },
+      floor: { ka: 0.25, kd: 0.8, ks: 0.05, shininess: 8, uvScale: [24, 24] },
       metal: { ka: 0.15, kd: 0.5, ks: 0.9, shininess: 64, uvScale: [1, 1] },
       matte: { ka: 0.2, kd: 0.9, ks: 0.1, shininess: 8, uvScale: [1, 1] },
       emissive: { ka: 1.0, kd: 0.0, ks: 0.0, shininess: 1, uvScale: [1, 1] }, // 광원 표시용
@@ -267,9 +267,11 @@
     const initialState = () => ({
       time: 0,                                // 장면 시간 (0 ~ SCENE_DURATION)
       playing: true,
-      camera: { yaw: 1.9, pitch: 0.35, distance: 9 },
+      cameraMode: 'broadcast',                // camera.js CAMERA_MODES (1/2/3키)
+      orbit: { yaw: 0, pitch: 0, zoom: 1 },   // 중계 시점에 마우스로 더한 회전·줌
     });
     let state = initialState();
+    let dragging = false;
 
     // event.code는 물리 키 위치('Space', 'ArrowLeft')라서 한글 입력 상태나 Shift와 상관없이 같은 값이다.
     // (event.key는 한글 입력 상태에서 'ㅂ'이나 'Process'가 되어 키가 안 먹는다)
@@ -285,22 +287,31 @@
         const step = code === 'ArrowRight' ? FRAME_STEP : -FRAME_STEP;
         state.time = clamp(state.time + step, 0, SCENE_DURATION);
       }
-      if (code === 'KeyR') state = { ...initialState(), camera: state.camera };
+      if (code === 'KeyR') state = { ...initialState(), cameraMode: state.cameraMode };
+      // [추가] 1/2/3: 카메라 시점 전환 (숫자패드도 허용)
+      const digit = code.match(/^(?:Digit|Numpad)([1-3])$/);
+      if (digit) state.cameraMode = CAMERA_MODES[Number(digit[1]) - 1];
     });
 
-    // [추가] 마우스 드래그 궤도 회전 + 휠 줌
+    // [추가] 중계 시점: 마우스 드래그 궤도 회전 + 휠 줌. 놓으면 중계 위치로 서서히 돌아간다.
+    canvas.addEventListener('mousedown', () => { dragging = true; });
+    window.addEventListener('mouseup', () => { dragging = false; });
     canvas.addEventListener('mousemove', (event) => {
-      if (event.buttons !== 1) return;
-      const camera = state.camera;
-      camera.yaw -= event.movementX * 0.01;
-      camera.pitch = clamp(camera.pitch + event.movementY * 0.01, 0.05, 1.5);
+      if (!dragging || state.cameraMode !== 'broadcast') return;
+      state.orbit.yaw -= event.movementX * 0.01;
+      state.orbit.pitch += event.movementY * 0.01;
     });
     canvas.addEventListener('wheel', (event) => {
       event.preventDefault();
-      state.camera.distance = clamp(state.camera.distance * (1 + event.deltaY * 0.001), 3, 40);
+      state.orbit.zoom = clamp(state.orbit.zoom * (1 + event.deltaY * 0.001), 0.3, 2);
     }, { passive: false });
 
     function updateState(dt) {
+      if (!dragging) {
+        const back = Math.exp(-3 * dt);       // 프레임 속도와 무관하게 일정한 비율로 복귀
+        state.orbit.yaw *= back;
+        state.orbit.pitch *= back;
+      }
       if (!state.playing) return;
       state.time = Math.min(state.time + dt, SCENE_DURATION);
       if (state.time >= SCENE_DURATION) state.playing = false;  // 끝에서 멈춤 (세레모니가 이어질 자리)
@@ -346,19 +357,28 @@
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
       const scene = sampleScene(state.time);
+      const framesOf = (track) => computeFrames(PLAYER_NODES, track.pose, track.rootMatrix);
+      const runnerFrames = framesOf(scene.runner);
 
-      // 궤도 카메라: target을 중심으로 yaw/pitch/distance 구면 좌표. target은 러닝백을 따라간다.
-      // ponytail: 임시 카메라. 중계 VIEW·1인칭·공 시점은 다음 작업에서 교체.
-      const { yaw, pitch, distance } = state.camera;
-      const runnerPos = scene.runner.pos;
-      const target = [runnerPos[0], 1, runnerPos[2]];
-      const eye = [
-        target[0] + distance * Math.cos(pitch) * Math.sin(yaw),
-        target[1] + distance * Math.sin(pitch),
-        target[2] + distance * Math.cos(pitch) * Math.cos(yaw),
-      ];
-      const projectionMatrix = perspective(Math.PI / 4, canvas.width / canvas.height, 0.1, 100);
-      const viewProjectionMatrix = multiply(projectionMatrix, lookAt(eye, target, [0, 1, 0]));
+      // ---- [추가] 카메라 (camera.js). 시점마다 View 행렬·화각·숨길 부위가 다르다 ----
+      let camera;
+      if (state.cameraMode === 'firstPerson') {
+        camera = firstPersonCamera(runnerFrames.head);
+      } else if (state.cameraMode === 'ball') {
+        const dt = 0.05;  // 공 진행 방향을 구할 앞뒤 시간 간격
+        const ballAt = (t) => {
+          const frame = framesOf(sampleTrack(KEYFRAMES.runner, t)).ball;
+          return [frame[12], frame[13], frame[14]];
+        };
+        const root = scene.runner.rootMatrix;
+        camera = ballCamera(ballAt(state.time - dt), ballAt(state.time), ballAt(state.time + dt),
+          [root[8], root[9], root[10]]);
+      } else {
+        camera = broadcastCamera(scene.runner.pos, state.time, state.orbit);
+      }
+      const eye = camera.eye;
+      const projectionMatrix = perspective(camera.fov, canvas.width / canvas.height, camera.near, 300);
+      const viewProjectionMatrix = multiply(projectionMatrix, camera.view);
 
       gl.uniform3fv(uniforms.uLightPosition, LIGHT_POSITION);
       gl.uniform3fv(uniforms.uCameraPosition, eye);
@@ -369,15 +389,16 @@
 
       // 바닥: 정육면체를 비균등 스케일 (임시. 실제 필드는 홍채운 작업에서 교체)
       draw(meshes.cube,
-        multiplyAll(translation(0, -0.05, 8), scaling(20, 0.05, 20)),
+        multiplyAll(translation(0, -0.05, 8), scaling(60, 0.05, 60)),
         textures.checker, materials.floor);
 
       // ---- [추가] 선수 관절 트리 (player.js) × 키프레임 (animation.js) ----
       for (const player of PLAYERS) {
-        const { pose, rootMatrix } = scene[player.track];
-        const frames = computeFrames(PLAYER_NODES, pose, rootMatrix);
+        const isRunner = player.track === 'runner';
+        const frames = isRunner ? runnerFrames : framesOf(scene[player.track]);
         for (const node of PLAYER_NODES) {
           if (node.name === 'ball' && !player.hasBall) continue;
+          if (isRunner && camera.hide.includes(node.name)) continue;  // 카메라가 들어가 있는 부위
           const look = player.looks[node.shape.look];
           draw(meshes[node.shape.mesh], shapeMatrix(frames[node.name], node.shape),
             look.texture, look.material);
@@ -390,7 +411,7 @@
         textures.white, materials.emissive);
     }
 
-    const HELP = 'Space: 재생/정지 | ←/→: 프레임 이동 | R: 처음부터 | 마우스 드래그: 카메라 회전 | 휠: 줌';
+    const HELP = 'Space: 재생/정지 | ←/→: 프레임 이동 | R: 처음부터 | 1/2/3: 시점 | 드래그·휠: 중계 카메라 회전·줌';
 
     let lastMs = performance.now();
     function animate(nowMs) {
@@ -398,7 +419,7 @@
       lastMs = nowMs;
       updateState(dt);
       drawScene();
-      status.textContent = `${HELP}\n${state.playing ? '▶' : '⏸'} ${state.time.toFixed(2)}s / ${SCENE_DURATION.toFixed(1)}s`;
+      status.textContent = `${HELP}\n${state.playing ? '▶' : '⏸'} ${state.time.toFixed(2)}s / ${SCENE_DURATION.toFixed(1)}s | 시점: ${CAMERA_LABELS[state.cameraMode]}`;
       requestAnimationFrame(animate);
     }
     requestAnimationFrame(animate);

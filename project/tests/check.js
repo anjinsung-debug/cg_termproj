@@ -7,7 +7,7 @@ const vm = require('vm');
 const assert = require('assert');
 
 const context = vm.createContext({ Float32Array, Math });
-for (const file of ['matrix.js', 'player.js', 'animation.js']) {
+for (const file of ['matrix.js', 'player.js', 'animation.js', 'camera.js']) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'js', file), 'utf8'), context);
 }
 const run = (code) => vm.runInContext(code, context);
@@ -61,4 +61,27 @@ for (const [name, frames] of Object.entries(run('KEYFRAMES'))) {
   assert.strictEqual(frames[frames.length - 1].time, run('SCENE_DURATION'), `${name} 끝 = 장면 길이`);
 }
 
-console.log('OK: inverse, lookAt=inverse(camera world), joint tree heights, hierarchy inheritance, keyframe sampling');
+// 7) 카메라: 보여야 할 것이 카메라 앞(View 공간 z < 0)에 있는지
+const toView = (view, p) => {
+  const v = run('multiply')(view, new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, p[0], p[1], p[2], 1]));
+  return [v[12], v[13], v[14]];
+};
+// 1인칭: +Z를 보고 선 선수의 눈 앞 5야드가 화면 정면에 있다
+const standing = run('computeFrames(PLAYER_NODES, {}, translation(0, 0, 0))');
+context.headFrame = standing.head;
+const fp = run('firstPersonCamera(headFrame)');
+const ahead = toView(fp.view, [fp.eye[0], fp.eye[1], fp.eye[2] + 5]);
+assert(ahead[2] < -4.9 && Math.abs(ahead[0]) < 1e-3, `1인칭: 앞쪽이 정면 ${ahead}`);
+near(fp.eye, [0, 0.97 + 0.1 + 0.62 + 0.15, 0.1], '1인칭: 눈 위치 = 머리 frame + 눈 오프셋');
+// 공 시점: +Z로 움직이는 공은 +Z를 본다
+const bc = run('ballCamera([0, 1, 0], [0, 1, 1], [0, 1, 2], [1, 0, 0])');
+assert(toView(bc.view, [0, 1, 10])[2] < 0, '공 시점: 진행 방향이 앞');
+const still = run('ballCamera([0, 1, 0], [0, 1, 0], [0, 1, 0], [1, 0, 0])');
+assert(toView(still.view, [10, 1, 0])[2] < 0, '공 시점: 멈추면 러닝백 정면 방향');
+// 중계: 러닝백이 화면 가운데 근처에 보이고, 허들 구간에서는 줌인
+const br = run('broadcastCamera([1, 0, 12], 1.0)');
+const r = toView(br.view, [1, 1, 12]);
+assert(r[2] < 0 && Math.abs(r[0] / r[2]) < 0.1, `중계: 러닝백이 화면 중앙 ${r}`);
+assert(run('broadcastCamera([1, 0, 12], 2.3)').fov < br.fov, '중계: 허들 때 화각이 좁아짐');
+
+console.log('OK: inverse, lookAt=inverse(camera world), joint tree heights, hierarchy inheritance, keyframe sampling, cameras');
