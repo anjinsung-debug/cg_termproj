@@ -214,6 +214,12 @@
       checker: createCheckerTexture(),
       earth: loadTexture('textures/earth_texture.png', [40, 120, 210]),
       moon: loadTexture('textures/moon_texture.png', [175, 175, 175]),
+      // [추가] 선수용 단색 텍스처 (1x1). 실제 유니폼 이미지는 홍채운 텍스처 작업에서 교체.
+      jersey: loadTexture(null, [0, 76, 84]),
+      pants: loadTexture(null, [225, 225, 215]),
+      helmet: loadTexture(null, [160, 165, 170]),
+      skin: loadTexture(null, [120, 80, 55]),
+      ball: loadTexture(null, [110, 55, 25]),
     };
 
     // 재질: Phong 계수 + UV 반복 횟수
@@ -224,15 +230,24 @@
       emissive: { ka: 1.0, kd: 0.0, ks: 0.0, shininess: 1, uvScale: [1, 1] }, // 광원 표시용
     };
 
+    // [추가] 선수 부위(look) → 텍스처 + 재질. 헬멧만 금속성 하이라이트.
+    const looks = {
+      jersey: { texture: textures.jersey, material: materials.matte },
+      pants: { texture: textures.pants, material: materials.matte },
+      helmet: { texture: textures.helmet, material: materials.metal },
+      skin: { texture: textures.skin, material: materials.matte },
+      ball: { texture: textures.ball, material: materials.matte },
+    };
+
     // ========================================================================
     // 4. 상태 + 키보드 입력 (누르고 있는 동안 연속 동작)
     // ========================================================================
 
     const LIGHT_POSITION = [3, 5, 3];
     const initialState = () => ({
-      baseYaw: 0,                    // 부모: Y축 회전 (Q/E)
-      armAngle: Math.PI / 6,         // 자식: Z축 관절 회전 (W/S)
-      camera: { yaw: 0.6, pitch: 0.45, distance: 9 },
+      playerYaw: 0,                  // 선수 전체(루트) Y축 회전 (Q/E)
+      stride: 0,                     // 팔다리 흔들기 -1~1 (W/S) → 관절 트리 테스트용
+      camera: { yaw: 0.6, pitch: 0.3, distance: 5 },
     });
     let state = initialState();
 
@@ -253,10 +268,10 @@
 
     function updateState(dt) {
       const turn = 1.5 * dt;
-      if (pressed.has('KeyQ')) state.baseYaw += turn;
-      if (pressed.has('KeyE')) state.baseYaw -= turn;
-      if (pressed.has('KeyW')) state.armAngle = clamp(state.armAngle + turn, -1.4, 1.4);
-      if (pressed.has('KeyS')) state.armAngle = clamp(state.armAngle - turn, -1.4, 1.4);
+      if (pressed.has('KeyQ')) state.playerYaw += turn;
+      if (pressed.has('KeyE')) state.playerYaw -= turn;
+      if (pressed.has('KeyW')) state.stride = clamp(state.stride + turn, -1, 1);
+      if (pressed.has('KeyS')) state.stride = clamp(state.stride - turn, -1, 1);
 
       const camera = state.camera;
       if (pressed.has('ArrowLeft')) camera.yaw -= turn;
@@ -329,24 +344,13 @@
         multiplyAll(translation(0, -0.05, 0), scaling(10, 0.05, 10)),
         textures.checker, materials.floor);
 
-      // ---- 계층 구조 예시 (HW1 방식: frame에는 이동/회전만, geometry 복사본에만 scale) ----
-      // 1) base frame
-      const baseFrame = rotationY(state.baseYaw);
-      draw(meshes.cube,
-        multiplyAll(baseFrame, translation(0, 0.25, 0), scaling(0.6, 0.25, 0.6)),
-        textures.moon, materials.metal);
-
-      // 2) arm frame: base 윗면으로 이동 후 관절 회전 → base 회전을 상속
-      const armFrame = multiplyAll(baseFrame, translation(0, 0.5, 0), rotationZ(state.armAngle));
-      draw(meshes.cube,
-        multiplyAll(armFrame, translation(0, 0.75, 0), scaling(0.12, 0.75, 0.12)),
-        textures.white, materials.metal);
-
-      // 3) tip frame: arm 끝 → base와 arm 회전을 모두 상속
-      const tipFrame = multiplyAll(armFrame, translation(0, 1.5, 0));
-      draw(meshes.sphere,
-        multiplyAll(tipFrame, scaling(0.3)),
-        textures.earth, materials.matte);
+      // ---- [추가] 선수 관절 트리 (player.js, HW1 계층 구조 일반화) ----
+      const frames = computeFrames(PLAYER_NODES, runPose(state.stride), rotationY(state.playerYaw));
+      for (const node of PLAYER_NODES) {
+        const look = looks[node.shape.look];
+        draw(meshes[node.shape.mesh], shapeMatrix(frames[node.name], node.shape),
+          look.texture, look.material);
+      }
 
       // 광원 위치 표시
       draw(meshes.sphere,
@@ -355,7 +359,7 @@
     }
 
     status.textContent =
-      'Q/E: 부모 회전 | W/S: 자식 관절 | 방향키: 카메라 회전 | Z/X: 줌 | R: 초기화';
+      'Q/E: 선수 회전 | W/S: 팔다리 흔들기 | 방향키: 카메라 회전 | Z/X: 줌 | R: 초기화';
 
     let lastMs = performance.now();
     function animate(nowMs) {
